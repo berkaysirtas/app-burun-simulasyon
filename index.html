@@ -13,7 +13,8 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="apple-mobile-web-app-title" content="Burun Simülasyon">
-  <link rel="apple-touch-icon" href="icon.svg">
+  <link rel="apple-touch-icon" href="dr-ismail-logo.png">
+  <link rel="icon" type="image/png" href="dr-ismail-logo.png">
 
   <!-- Android / genel -->
   <meta name="mobile-web-app-capable" content="yes">
@@ -56,14 +57,21 @@
     }
 
     .brand-icon {
-      width: 40px;
-      height: 40px;
-      background: linear-gradient(135deg, #1a5fff 0%, #0a3ecf 100%);
+      width: 44px;
+      height: 44px;
+      background: #000;
       border-radius: 10px;
+      overflow: hidden;
       display: flex;
       align-items: center;
       justify-content: center;
       flex-shrink: 0;
+    }
+    .brand-icon img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
     }
 
     .brand-text { line-height: 1.2; }
@@ -483,13 +491,7 @@
   <header class="brand-header">
     <div class="brand-left">
       <div class="brand-icon">
-        <!-- medical cross / health icon -->
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff"
-             stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2z" fill="rgba(255,255,255,0.1)" stroke="none"/>
-          <line x1="12" y1="8" x2="12" y2="16"/>
-          <line x1="8" y1="12" x2="16" y2="12"/>
-        </svg>
+        <img src="dr-ismail-logo.png" alt="Op. Dr. İsmail Boyraz logo">
       </div>
       <div class="brand-text">
         <div class="brand-name">Op. Dr. İsmail Boyraz</div>
@@ -540,6 +542,14 @@
           <line x1="12" y1="15" x2="12" y2="3"/>
         </svg>
         Kaydet
+      </button>
+      <button class="act-btn" id="btn-download-compare" style="background:#eef4ff;color:#1a5fff;border:1px solid #c7d8f8;">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="4" width="8" height="16" rx="1.5"/>
+          <rect x="13" y="4" width="8" height="16" rx="1.5"/>
+        </svg>
+        Karşılaştırma İndir
       </button>
       <button class="act-btn" id="btn-fill-white" style="display:none; background:#f0fdf4; color:#166534;">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -598,8 +608,8 @@
       </div>
       <div class="ctrl-group">
         <span class="ctrl-label">Fırça Boyutu</span>
-        <input type="range" id="radius-slider" min="20" max="150" value="70">
-        <span class="ctrl-val" id="radius-value">70</span>
+        <input type="range" id="radius-slider" min="5" max="150" value="50">
+        <span class="ctrl-val" id="radius-value">50</span>
         <span class="ctrl-hint">Küçük ←——→ Büyük</span>
       </div>
       <div class="ctrl-divider"></div>
@@ -681,9 +691,17 @@
   const ZOOM_MAX  = 6;
   const ZOOM_STEP = 0.25;
 
-  // Drag-start snapshot — warp her frame bu temiz görüntüden okur, blur birikmez
+  // Warp source — orijinal (veya bg-removed/fill-white sonrası) ImageData.
+  // Tüm warp'lar bu pristine kaynaktan okur → birikim asla blur yapmaz.
+  let warpSource = null;
+  // Cumulative displacement field — pixel(x,y) = warpSource(x+dispX[idx], y+dispY[idx])
+  let dispX = null, dispY = null;
+
+  // Drag-start snapshot
   let dragStartImageData = null;
+  let dragStartDispX = null, dragStartDispY = null;
   let dragStartX = 0, dragStartY = 0;
+  let lastWarpRect = null;
 
   // Pinch-to-zoom (touch) state
   let isTouchPinching  = false;
@@ -700,64 +718,166 @@
   let btnUndo, btnReset, btnDownload, btnNewPhoto, btnUploadBig;
 
   // ── Pixel helpers ──────────────────────────────────────────────────────────
-  function getPixel(data, x, y, w, h) {
-    const cx = Math.max(0, Math.min(w - 1, x));
-    const cy = Math.max(0, Math.min(h - 1, y));
-    const i  = (cy * w + cx) * 4;
-    return [data[i], data[i+1], data[i+2], data[i+3]];
+  // Catmull-Rom kernel (a = -0.5) — sharp without ringing
+  function cubicWeight(t) {
+    const at  = t < 0 ? -t : t;
+    const at2 = at * at;
+    const at3 = at2 * at;
+    if (at < 1) return 1.5 * at3 - 2.5 * at2 + 1;
+    if (at < 2) return -0.5 * at3 + 2.5 * at2 - 4 * at + 2;
+    return 0;
   }
 
-  function bilinearInterpolate(data, srcX, srcY, w, h) {
-    const x0 = Math.floor(srcX), y0 = Math.floor(srcY);
-    const x1 = x0 + 1,          y1 = y0 + 1;
-    const fx = srcX - x0,        fy = srcY - y0;
-    const p00 = getPixel(data, x0, y0, w, h);
-    const p10 = getPixel(data, x1, y0, w, h);
-    const p01 = getPixel(data, x0, y1, w, h);
-    const p11 = getPixel(data, x1, y1, w, h);
-    const out = new Array(4);
-    for (let c = 0; c < 4; c++) {
-      const top    = p00[c] * (1 - fx) + p10[c] * fx;
-      const bottom = p01[c] * (1 - fx) + p11[c] * fx;
-      out[c] = Math.round(top * (1 - fy) + bottom * fy);
+  function bicubicInterpolate(data, srcX, srcY, w, h) {
+    const x0 = Math.floor(srcX);
+    const y0 = Math.floor(srcY);
+    const fx = srcX - x0;
+    const fy = srcY - y0;
+
+    const wx0 = cubicWeight(-1 - fx);
+    const wx1 = cubicWeight(    -fx);
+    const wx2 = cubicWeight( 1 - fx);
+    const wx3 = cubicWeight( 2 - fx);
+    const wy0 = cubicWeight(-1 - fy);
+    const wy1 = cubicWeight(    -fy);
+    const wy2 = cubicWeight( 1 - fy);
+    const wy3 = cubicWeight( 2 - fy);
+
+    let r = 0, g = 0, b = 0, a = 0;
+    const wxs = [wx0, wx1, wx2, wx3];
+    const wys = [wy0, wy1, wy2, wy3];
+
+    for (let j = 0; j < 4; j++) {
+      const py  = y0 - 1 + j;
+      const cpy = py < 0 ? 0 : py > h - 1 ? h - 1 : py;
+      const wy  = wys[j];
+      const row = cpy * w;
+      for (let i = 0; i < 4; i++) {
+        const px  = x0 - 1 + i;
+        const cpx = px < 0 ? 0 : px > w - 1 ? w - 1 : px;
+        const wij = wxs[i] * wy;
+        const idx = (row + cpx) * 4;
+        r += data[idx]     * wij;
+        g += data[idx + 1] * wij;
+        b += data[idx + 2] * wij;
+        a += data[idx + 3] * wij;
+      }
     }
-    return out;
+
+    return [
+      r < 0 ? 0 : r > 255 ? 255 : r,
+      g < 0 ? 0 : g > 255 ? 255 : g,
+      b < 0 ? 0 : b > 255 ? 255 : b,
+      a < 0 ? 0 : a > 255 ? 255 : a
+    ];
+  }
+
+  // Float field için hızlı bilinear örnekleyici (smooth scalar field)
+  function bilinearSampleField(field, x, y, w, h) {
+    if (x < 0) x = 0; else if (x > w - 1) x = w - 1;
+    if (y < 0) y = 0; else if (y > h - 1) y = h - 1;
+    const x0 = x | 0;
+    const y0 = y | 0;
+    const x1 = x0 + 1 < w ? x0 + 1 : x0;
+    const y1 = y0 + 1 < h ? y0 + 1 : y0;
+    const fx = x - x0;
+    const fy = y - y0;
+    const v00 = field[y0 * w + x0];
+    const v10 = field[y0 * w + x1];
+    const v01 = field[y1 * w + x0];
+    const v11 = field[y1 * w + x1];
+    const top = v00 + (v10 - v00) * fx;
+    const bot = v01 + (v11 - v01) * fx;
+    return top + (bot - top) * fy;
   }
 
   // ── Warp ──────────────────────────────────────────────────────────────────
+  // Mimari: her frame görüntü dragStartImageData üzerinden çizilir, fakat
+  // pikseller bicubic ile DOĞRUDAN warpSource'tan örneklenir. Composed
+  // displacement = bu drag'in offset'i ∘ önceki cumulative disp.
+  // Sonuç: kaç drag yapılırsa yapılsın her piksel = en fazla 1 bicubic örnek.
   function applyWarp(cx, cy, dx, dy) {
-    if (!currentImageData || !dragStartImageData) return;
+    if (!warpSource || !dragStartImageData || !dragStartDispX) return;
     const strength = strengthSlider.value / 100;
     const radius   = parseInt(radiusSlider.value, 10);
     const r2 = radius * radius;
-    const w  = dragStartImageData.width;
-    const h  = dragStartImageData.height;
-    // Her zaman drag başındaki temiz görüntüden oku — bilinear blur birikmez
-    const src = dragStartImageData.data;
-    const out = new Uint8ClampedArray(src);
+    const w  = warpSource.width;
+    const h  = warpSource.height;
+    const src = warpSource.data;
+    const out = new Uint8ClampedArray(dragStartImageData.data);
 
     const xMin = Math.max(0,     Math.floor(cx - radius));
     const xMax = Math.min(w - 1, Math.ceil(cx  + radius));
     const yMin = Math.max(0,     Math.floor(cy - radius));
     const yMax = Math.min(h - 1, Math.ceil(cy  + radius));
 
+    // Önceki frame'de değiştirdiğimiz pikselleri dragStart durumuna döndür
+    if (lastWarpRect) {
+      const lr = lastWarpRect;
+      for (let y = lr.yMin; y <= lr.yMax; y++) {
+        const row = y * w;
+        for (let x = lr.xMin; x <= lr.xMax; x++) {
+          const idx = row + x;
+          dispX[idx] = dragStartDispX[idx];
+          dispY[idx] = dragStartDispY[idx];
+        }
+      }
+    }
+
     for (let y = yMin; y <= yMax; y++) {
+      const row = y * w;
       for (let x = xMin; x <= xMax; x++) {
         const dxC = x - cx, dyC = y - cy;
         const dist2 = dxC * dxC + dyC * dyC;
         if (dist2 >= r2) continue;
         const t = 1 - dist2 / r2;
         const falloff = t * t;
-        const srcX = x - dx * strength * falloff;
-        const srcY = y - dy * strength * falloff;
-        const [r, g, b, a] = bilinearInterpolate(src, srcX, srcY, w, h);
-        const idx = (y * w + x) * 4;
-        out[idx] = r; out[idx+1] = g; out[idx+2] = b; out[idx+3] = a;
+        const offX = -dx * strength * falloff;
+        const offY = -dy * strength * falloff;
+
+        // Compose: drag-start disp'i (x+offX, y+offY) noktasında örnekle
+        const sX = x + offX;
+        const sY = y + offY;
+        const prevDX = bilinearSampleField(dragStartDispX, sX, sY, w, h);
+        const prevDY = bilinearSampleField(dragStartDispY, sX, sY, w, h);
+        const totalDX = offX + prevDX;
+        const totalDY = offY + prevDY;
+
+        const idx = row + x;
+        dispX[idx] = totalDX;
+        dispY[idx] = totalDY;
+
+        // warpSource'tan tek seferlik bicubic örnek — birikim yok
+        const [pr, pg, pb, pa] = bicubicInterpolate(src, x + totalDX, y + totalDY, w, h);
+        const pi = idx * 4;
+        out[pi] = pr; out[pi+1] = pg; out[pi+2] = pb; out[pi+3] = pa;
       }
     }
 
+    lastWarpRect = { xMin, xMax, yMin, yMax };
     mainCtx.putImageData(new ImageData(out, w, h), 0, 0);
     currentImageData = mainCtx.getImageData(0, 0, w, h);
+  }
+
+  // Aktif drag'i iptal et — pinch zoom kesintisinde kullanılır
+  function revertActiveDrag() {
+    if (!isDragging || !dragStartImageData) return;
+    mainCtx.putImageData(dragStartImageData, 0, 0);
+    currentImageData = mainCtx.getImageData(0, 0, mainCanvas.width, mainCanvas.height);
+    if (lastWarpRect) {
+      const lr = lastWarpRect;
+      const w = mainCanvas.width;
+      for (let y = lr.yMin; y <= lr.yMax; y++) {
+        const row = y * w;
+        for (let x = lr.xMin; x <= lr.xMax; x++) {
+          const idx = row + x;
+          dispX[idx] = dragStartDispX[idx];
+          dispY[idx] = dragStartDispY[idx];
+        }
+      }
+    }
+    lastWarpRect = null;
+    isDragging = false;
   }
 
   // ── Zoom & pan ────────────────────────────────────────────────────────────
@@ -787,6 +907,64 @@
     applyZoom();
   }
 
+  // ── Karşılaştırma indirme ────────────────────────────────────────────────
+  function pad(n) { return n < 10 ? '0' + n : '' + n; }
+  function formatStamp(d) {
+    return `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
+  }
+  function formatStampHuman(d) {
+    return `${pad(d.getDate())}.${pad(d.getMonth()+1)}.${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
+  function buildComparisonDataUrl() {
+    const W = mainCanvas.width;
+    const H = mainCanvas.height;
+    const gap = 12;
+    const headerH = 44;
+    const footerH = 60;
+    const totalW = W * 2 + gap;
+    const totalH = headerH + H + footerH;
+
+    const c = document.createElement('canvas');
+    c.width = totalW;
+    c.height = totalH;
+    const cx = c.getContext('2d');
+
+    // Arka plan
+    cx.fillStyle = '#ffffff';
+    cx.fillRect(0, 0, totalW, totalH);
+
+    // Üst etiketler
+    cx.fillStyle = '#0f1e38';
+    cx.font = '600 18px system-ui, -apple-system, sans-serif';
+    cx.textAlign = 'center';
+    cx.textBaseline = 'middle';
+    cx.fillText('ÖNCEKİ HÂL', W / 2, headerH / 2);
+    cx.fillStyle = '#1a5fff';
+    cx.fillText('SİMÜLASYON', W + gap + W / 2, headerH / 2);
+
+    // Görüntüler
+    cx.drawImage(beforeCanvas, 0, headerH);
+    cx.drawImage(mainCanvas, W + gap, headerH);
+
+    // Alt: marka + zaman damgası
+    cx.fillStyle = '#0f1e38';
+    cx.font = '600 14px system-ui, -apple-system, sans-serif';
+    cx.textAlign = 'left';
+    cx.fillText('Op. Dr. İsmail Boyraz · KBB & Estetik Cerrahi', 12, headerH + H + 22);
+
+    cx.fillStyle = '#7a90ac';
+    cx.font = '500 12px system-ui, -apple-system, sans-serif';
+    cx.fillText('Burun Estetiği Simülasyonu — bilgilendirme amaçlıdır.', 12, headerH + H + 42);
+
+    cx.fillStyle = '#7a90ac';
+    cx.font = '500 12px system-ui, -apple-system, sans-serif';
+    cx.textAlign = 'right';
+    cx.fillText(formatStampHuman(new Date()), totalW - 12, headerH + H + 42);
+
+    return c.toDataURL('image/png');
+  }
+
   // ── Touch helpers ─────────────────────────────────────────────────────────
   function touchDist(touches) {
     const dx = touches[0].clientX - touches[1].clientX;
@@ -813,8 +991,13 @@
         data[i] = 255; data[i+1] = 255; data[i+2] = 255; data[i+3] = 255;
       }
     }
-    mainCtx.putImageData(new ImageData(data, w, h), 0, 0);
+    const result = new ImageData(data, w, h);
+    mainCtx.putImageData(result, 0, 0);
     currentImageData = mainCtx.getImageData(0, 0, w, h);
+    // Yeni warp source = bu görüntü; displacement field sıfırlanır
+    warpSource = new ImageData(new Uint8ClampedArray(currentImageData.data), w, h);
+    dispX.fill(0);
+    dispY.fill(0);
   }
 
   // ── Otomatik arka plan kaldırma (kenar-tabanlı flood fill) ───────────────
@@ -899,6 +1082,10 @@
 
       mainCtx.putImageData(new ImageData(src, w, h), 0, 0);
       currentImageData = mainCtx.getImageData(0, 0, w, h);
+      // Yeni warp source = bg-removed görüntü; displacement field sıfırlanır
+      warpSource = new ImageData(new Uint8ClampedArray(currentImageData.data), w, h);
+      dispX.fill(0);
+      dispY.fill(0);
       document.getElementById('btn-fill-white').style.display = 'flex';
       loadingEl.classList.remove('active');
       btnBg.disabled = false;
@@ -912,10 +1099,11 @@
     overlayCtx.beginPath();
     overlayCtx.arc(x, y, radius, 0, Math.PI * 2);
     overlayCtx.strokeStyle = 'rgba(26,95,255,0.55)';
-    overlayCtx.lineWidth = 2;
+    overlayCtx.lineWidth = radius < 12 ? 1 : 2;
     overlayCtx.stroke();
+    const dotR = Math.min(3, Math.max(1, radius / 4));
     overlayCtx.beginPath();
-    overlayCtx.arc(x, y, 3, 0, Math.PI * 2);
+    overlayCtx.arc(x, y, dotR, 0, Math.PI * 2);
     overlayCtx.fillStyle = 'rgba(26,95,255,0.8)';
     overlayCtx.fill();
   }
@@ -927,18 +1115,26 @@
   // ── Undo ──────────────────────────────────────────────────────────────────
   function pushUndo() {
     if (undoStack.length >= MAX_UNDO) undoStack.shift();
-    undoStack.push(new ImageData(
-      new Uint8ClampedArray(currentImageData.data),
-      currentImageData.width, currentImageData.height
-    ));
+    undoStack.push({
+      image: new ImageData(
+        new Uint8ClampedArray(currentImageData.data),
+        currentImageData.width, currentImageData.height
+      ),
+      dispX: new Float32Array(dispX),
+      dispY: new Float32Array(dispY),
+      warpSource // referans — bg-remove/fill-white sonrası yeni ImageData oluşur, eskisi mutate olmaz
+    });
     updateUndoButton();
   }
 
   function popUndo() {
     if (!undoStack.length) return;
     const snap = undoStack.pop();
-    currentImageData = snap;
-    mainCtx.putImageData(snap, 0, 0);
+    currentImageData = snap.image;
+    dispX = snap.dispX;
+    dispY = snap.dispY;
+    warpSource = snap.warpSource;
+    mainCtx.putImageData(snap.image, 0, 0);
     updateUndoButton();
   }
 
@@ -973,13 +1169,15 @@
     isDragging = true;
     [lastX, lastY] = getCanvasCoords(e);
 
-    // drag başındaki temiz görüntüyü sakla
     dragStartX = lastX;
     dragStartY = lastY;
     dragStartImageData = new ImageData(
       new Uint8ClampedArray(currentImageData.data),
       currentImageData.width, currentImageData.height
     );
+    dragStartDispX = new Float32Array(dispX);
+    dragStartDispY = new Float32Array(dispY);
+    lastWarpRect = null;
   }
 
   function onPointerMove(e) {
@@ -1031,8 +1229,8 @@
         // Tek parmak → warp başlat (onPointerDown dragStartImageData'yı kaydeder)
         onPointerDown(e);
       } else if (e.touches.length === 2) {
-        // İki parmak → devam eden warp'ı iptal et, pinch moduna geç
-        isDragging = false;
+        // İki parmak → devam eden warp'ı geri al (canvas + disp field), pinch moduna geç
+        revertActiveDrag();
         isTouchPinching  = true;
         pinchStartDist   = touchDist(e.touches);
         pinchStartZoom   = zoomLevel;
@@ -1120,6 +1318,9 @@
       const raw = mainCtx.getImageData(0, 0, w, h);
       originalImageData = new ImageData(new Uint8ClampedArray(raw.data), w, h);
       currentImageData  = mainCtx.getImageData(0, 0, w, h);
+      warpSource        = new ImageData(new Uint8ClampedArray(raw.data), w, h);
+      dispX = new Float32Array(w * h);
+      dispY = new Float32Array(w * h);
 
       undoStack = [];
       updateUndoButton();
@@ -1154,6 +1355,11 @@
     document.getElementById('btn-fill-white').style.display = 'none';
     originalImageData = null;
     currentImageData  = null;
+    warpSource        = null;
+    dispX = null; dispY = null;
+    dragStartImageData = null;
+    dragStartDispX = null; dragStartDispY = null;
+    lastWarpRect = null;
     undoStack = [];
     updateUndoButton();
     resetZoom();
@@ -1206,17 +1412,26 @@
     btnReset.addEventListener('click', () => {
       if (!originalImageData) return;
       pushUndo();
-      currentImageData = new ImageData(
-        new Uint8ClampedArray(originalImageData.data),
-        originalImageData.width, originalImageData.height
-      );
+      const w = originalImageData.width, h = originalImageData.height;
+      currentImageData = new ImageData(new Uint8ClampedArray(originalImageData.data), w, h);
+      warpSource = new ImageData(new Uint8ClampedArray(originalImageData.data), w, h);
+      dispX.fill(0);
+      dispY.fill(0);
       mainCtx.putImageData(currentImageData, 0, 0);
     });
 
     btnDownload.addEventListener('click', () => {
       const a = document.createElement('a');
-      a.download = 'simulasyon.png';
+      a.download = `simulasyon-${formatStamp(new Date())}.png`;
       a.href = mainCanvas.toDataURL('image/png');
+      a.click();
+    });
+
+    document.getElementById('btn-download-compare').addEventListener('click', () => {
+      if (!originalImageData) return;
+      const a = document.createElement('a');
+      a.download = `karsilastirma-${formatStamp(new Date())}.png`;
+      a.href = buildComparisonDataUrl();
       a.click();
     });
 
