@@ -340,31 +340,6 @@
     .zoom-btn:active { transform: scale(0.94); }
     .zoom-btn-reset { font-size: 1rem; }
 
-    /* ── Loading overlay ── */
-    #bg-loading {
-      display: none;
-      position: absolute;
-      inset: 0;
-      background: rgba(255,255,255,0.82);
-      backdrop-filter: blur(3px);
-      z-index: 20;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      gap: 14px;
-      border-radius: 6px;
-    }
-    #bg-loading.active { display: flex; }
-    .spinner {
-      width: 36px; height: 36px;
-      border: 3px solid #e2e8f0;
-      border-top-color: #1a5fff;
-      border-radius: 50%;
-      animation: spin 0.7s linear infinite;
-    }
-    @keyframes spin { to { transform: rotate(360deg); } }
-    #bg-loading-text { font-size: 0.88rem; font-weight: 600; color: #3a4e6a; }
-
     #header-actions { flex-wrap: wrap; }
 
     /* ── Panels ── */
@@ -502,23 +477,6 @@
 
     <!-- Editor action buttons — header içinde, editör açıkken görünür -->
     <div id="header-actions" style="display:none;align-items:center;gap:8px;">
-      <button class="act-btn" id="btn-bg-remove" style="background:linear-gradient(135deg,#7c3aed,#5b21b6);color:#fff;box-shadow:0 2px 10px rgba(124,58,237,0.35);">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z" fill="rgba(255,255,255,0.15)" stroke="none"/>
-          <path d="M8 12h8M12 8v8"/>
-          <circle cx="12" cy="12" r="10"/>
-          <path d="M4.93 4.93l14.14 14.14" stroke-width="2.2"/>
-        </svg>
-        Arkaplanı Kaldır
-      </button>
-      <button class="act-btn" id="btn-fill-white" style="display:none; background:#f0fdf4; color:#166534;">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="3" y="3" width="18" height="18" rx="3" fill="currentColor" stroke="none" opacity="0.18"/>
-          <rect x="3" y="3" width="18" height="18" rx="3"/>
-        </svg>
-        Zemin Beyaz
-      </button>
-      <div style="width:1px;height:24px;background:#e2e8f0;flex-shrink:0;margin:0 2px;"></div>
       <button class="act-btn" id="btn-undo" disabled>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
              stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
@@ -550,14 +508,6 @@
           <rect x="13" y="4" width="8" height="16" rx="1.5"/>
         </svg>
         Karşılaştırma İndir
-      </button>
-      <button class="act-btn" id="btn-fill-white" style="display:none; background:#f0fdf4; color:#166534;">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-             stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="3" y="3" width="18" height="18" rx="3" fill="currentColor" stroke="none" opacity="0.2"/>
-          <rect x="3" y="3" width="18" height="18" rx="3"/>
-        </svg>
-        Zemin Beyaz
       </button>
       <button id="btn-new-photo">Yeni Fotoğraf</button>
     </div>
@@ -636,10 +586,6 @@
           <div id="canvas-container">
             <canvas id="main-canvas"></canvas>
             <canvas id="overlay-canvas"></canvas>
-            <div id="bg-loading">
-              <div class="spinner"></div>
-              <div id="bg-loading-text">Arkaplan kaldırılıyor…</div>
-            </div>
           </div>
         </div>
       </div>
@@ -654,7 +600,7 @@
           <line x1="12" y1="8" x2="12" y2="12"/>
           <line x1="12" y1="16" x2="12.01" y2="16"/>
         </svg>
-        Sürükle: şekil değiştir &nbsp;·&nbsp; Arkaplanı Kaldır: otomatik AI silme &nbsp;·&nbsp; 2 parmak: zoom/kaydır
+        Sürükle: şekil değiştir &nbsp;·&nbsp; 2 parmak: zoom/kaydır
       </div>
       <div id="footer-dev">developed by <span>Berkay Sırtaş</span></div>
     </div>
@@ -907,7 +853,14 @@
     applyZoom();
   }
 
-  // ── Karşılaştırma indirme ────────────────────────────────────────────────
+  // ── İndirme & filigran ────────────────────────────────────────────────────
+  let logoImg = null;
+  function preloadLogo() {
+    const img = new Image();
+    img.onload = () => { logoImg = img; };
+    img.src = 'dr-ismail-logo.png';
+  }
+
   function pad(n) { return n < 10 ? '0' + n : '' + n; }
   function formatStamp(d) {
     return `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
@@ -916,51 +869,69 @@
     return `${pad(d.getDate())}.${pad(d.getMonth()+1)}.${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
   }
 
+  // Sol-altta sade filigran: küçük logo + tarih, beyaz gölgeli (her arka planda okunur)
+  function drawWatermark(cx, x, y) {
+    const size = 26;
+    const dateStr = formatStampHuman(new Date());
+    if (logoImg) {
+      cx.save();
+      cx.globalAlpha = 0.85;
+      cx.drawImage(logoImg, x, y - size, size, size);
+      cx.restore();
+    }
+    cx.save();
+    cx.shadowColor = 'rgba(0,0,0,0.55)';
+    cx.shadowBlur = 4;
+    cx.fillStyle = 'rgba(255,255,255,0.95)';
+    cx.font = '600 11px system-ui, -apple-system, sans-serif';
+    cx.textAlign = 'left';
+    cx.textBaseline = 'alphabetic';
+    cx.fillText('Op. Dr. İsmail Boyraz · ' + dateStr, x + size + 8, y - 8);
+    cx.restore();
+  }
+
+  function buildSingleDataUrl() {
+    const W = mainCanvas.width;
+    const H = mainCanvas.height;
+    const c = document.createElement('canvas');
+    c.width = W;
+    c.height = H;
+    const cx = c.getContext('2d');
+    cx.drawImage(mainCanvas, 0, 0);
+    drawWatermark(cx, 10, H - 8);
+    return c.toDataURL('image/png');
+  }
+
   function buildComparisonDataUrl() {
     const W = mainCanvas.width;
     const H = mainCanvas.height;
     const gap = 12;
-    const headerH = 44;
-    const footerH = 60;
+    const headerH = 38;
     const totalW = W * 2 + gap;
-    const totalH = headerH + H + footerH;
+    const totalH = headerH + H;
 
     const c = document.createElement('canvas');
     c.width = totalW;
     c.height = totalH;
     const cx = c.getContext('2d');
 
-    // Arka plan
     cx.fillStyle = '#ffffff';
     cx.fillRect(0, 0, totalW, totalH);
 
-    // Üst etiketler
+    // ÖNCESİ / SONRASI etiketleri
     cx.fillStyle = '#0f1e38';
-    cx.font = '600 18px system-ui, -apple-system, sans-serif';
+    cx.font = '600 16px system-ui, -apple-system, sans-serif';
     cx.textAlign = 'center';
     cx.textBaseline = 'middle';
-    cx.fillText('ÖNCEKİ HÂL', W / 2, headerH / 2);
+    cx.fillText('ÖNCESİ', W / 2, headerH / 2);
     cx.fillStyle = '#1a5fff';
-    cx.fillText('SİMÜLASYON', W + gap + W / 2, headerH / 2);
+    cx.fillText('SONRASI', W + gap + W / 2, headerH / 2);
 
-    // Görüntüler
     cx.drawImage(beforeCanvas, 0, headerH);
     cx.drawImage(mainCanvas, W + gap, headerH);
 
-    // Alt: marka + zaman damgası
-    cx.fillStyle = '#0f1e38';
-    cx.font = '600 14px system-ui, -apple-system, sans-serif';
-    cx.textAlign = 'left';
-    cx.fillText('Op. Dr. İsmail Boyraz · KBB & Estetik Cerrahi', 12, headerH + H + 22);
-
-    cx.fillStyle = '#7a90ac';
-    cx.font = '500 12px system-ui, -apple-system, sans-serif';
-    cx.fillText('Burun Estetiği Simülasyonu — bilgilendirme amaçlıdır.', 12, headerH + H + 42);
-
-    cx.fillStyle = '#7a90ac';
-    cx.font = '500 12px system-ui, -apple-system, sans-serif';
-    cx.textAlign = 'right';
-    cx.fillText(formatStampHuman(new Date()), totalW - 12, headerH + H + 42);
+    // Sade filigran sol-altta (sonrası görüntüsünün altında değil, tüm bileşenin sol-altında)
+    drawWatermark(cx, 10, totalH - 8);
 
     return c.toDataURL('image/png');
   }
@@ -979,118 +950,8 @@
     };
   }
 
-  // ── Zemin beyaz yap ───────────────────────────────────────────────────────
-  function fillWhite() {
-    if (!currentImageData) return;
-    pushUndo();
-    const w = currentImageData.width;
-    const h = currentImageData.height;
-    const data = new Uint8ClampedArray(currentImageData.data);
-    for (let i = 0; i < data.length; i += 4) {
-      if (data[i + 3] < 128) {
-        data[i] = 255; data[i+1] = 255; data[i+2] = 255; data[i+3] = 255;
-      }
-    }
-    const result = new ImageData(data, w, h);
-    mainCtx.putImageData(result, 0, 0);
-    currentImageData = mainCtx.getImageData(0, 0, w, h);
-    // Yeni warp source = bu görüntü; displacement field sıfırlanır
-    warpSource = new ImageData(new Uint8ClampedArray(currentImageData.data), w, h);
-    dispX.fill(0);
-    dispY.fill(0);
-  }
-
-  // ── Otomatik arka plan kaldırma (kenar-tabanlı flood fill) ───────────────
-  function removeBackgroundAuto() {
-    if (!currentImageData) return;
-
-    const loadingEl = document.getElementById('bg-loading');
-    const loadingTxt = document.getElementById('bg-loading-text');
-    const btnBg = document.getElementById('btn-bg-remove');
-    btnBg.disabled = true;
-    loadingTxt.textContent = 'Arkaplan kaldırılıyor…';
-    loadingEl.classList.add('active');
-
-    // UI güncellensin diye kısa gecikme
-    setTimeout(() => {
-      pushUndo();
-      const w   = currentImageData.width;
-      const h   = currentImageData.height;
-      const src = new Uint8ClampedArray(currentImageData.data);
-      const tol = 40; // renk toleransı — düz zemin için yeterli
-
-      // Köşe/kenar noktasına yakın 5×5 bölgenin ortalama rengini al
-      function sampleColor(cx, cy) {
-        let r = 0, g = 0, b = 0, n = 0;
-        for (let dy = -2; dy <= 2; dy++) {
-          for (let dx = -2; dx <= 2; dx++) {
-            const x = Math.max(0, Math.min(w - 1, cx + dx));
-            const y = Math.max(0, Math.min(h - 1, cy + dy));
-            const i = (y * w + x) * 4;
-            if (src[i + 3] > 0) { r += src[i]; g += src[i+1]; b += src[i+2]; n++; }
-          }
-        }
-        return n > 0 ? [r/n, g/n, b/n] : null;
-      }
-
-      // Tohum noktaları: 4 köşe + 4 kenar ortası
-      const seedPoints = [
-        [0, 0], [w-1, 0], [0, h-1], [w-1, h-1],
-        [w >> 1, 0], [w >> 1, h-1],
-        [0, h >> 1], [w-1, h >> 1]
-      ];
-
-      const visited = new Uint8Array(w * h);
-
-      for (const [sx, sy] of seedPoints) {
-        const ref = sampleColor(sx, sy);
-        if (!ref) continue;
-        const [rR, rG, rB] = ref;
-
-        const pos0 = sy * w + sx;
-        if (visited[pos0]) continue;
-        visited[pos0] = 1;
-        const stack = [pos0];
-
-        while (stack.length) {
-          const pos = stack.pop();
-          const idx = pos * 4;
-          src[idx + 3] = 0; // şeffaf yap
-
-          const px = pos % w;
-          const py = (pos / w) | 0;
-
-          // 4-bağlantılı komşular
-          const nbrs = [];
-          if (px > 0)     nbrs.push(pos - 1);
-          if (px < w - 1) nbrs.push(pos + 1);
-          if (py > 0)     nbrs.push(pos - w);
-          if (py < h - 1) nbrs.push(pos + w);
-
-          for (const n of nbrs) {
-            if (visited[n]) continue;
-            const ni = n * 4;
-            if (src[ni + 3] === 0) { visited[n] = 1; continue; }
-            const dr = src[ni] - rR, dg = src[ni+1] - rG, db = src[ni+2] - rB;
-            if (Math.sqrt(dr*dr + dg*dg + db*db) <= tol) {
-              visited[n] = 1;
-              stack.push(n);
-            }
-          }
-        }
-      }
-
-      mainCtx.putImageData(new ImageData(src, w, h), 0, 0);
-      currentImageData = mainCtx.getImageData(0, 0, w, h);
-      // Yeni warp source = bg-removed görüntü; displacement field sıfırlanır
-      warpSource = new ImageData(new Uint8ClampedArray(currentImageData.data), w, h);
-      dispX.fill(0);
-      dispY.fill(0);
-      document.getElementById('btn-fill-white').style.display = 'flex';
-      loadingEl.classList.remove('active');
-      btnBg.disabled = false;
-    }, 30);
-  }
+  // NOT: "Arkaplanı Kaldır" / "Zemin Beyaz" geçici olarak kaldırıldı.
+  // TODO.md → Arkaplan Kaldırma — Gerçek Çözüm bölümüne bak.
 
   // ── Brush preview ─────────────────────────────────────────────────────────
   function drawBrushPreview(x, y) {
@@ -1344,7 +1205,6 @@
     editorScreen.classList.add('visible');
     document.getElementById('brand-badge').style.display    = 'none';
     document.getElementById('header-actions').style.display = 'flex';
-    document.getElementById('btn-fill-white').style.display = 'flex';
   }
 
   function showUpload() {
@@ -1352,7 +1212,6 @@
     uploadScreen.style.display = '';
     document.getElementById('brand-badge').style.display    = '';
     document.getElementById('header-actions').style.display = 'none';
-    document.getElementById('btn-fill-white').style.display = 'none';
     originalImageData = null;
     currentImageData  = null;
     warpSource        = null;
@@ -1421,9 +1280,10 @@
     });
 
     btnDownload.addEventListener('click', () => {
+      if (!currentImageData) return;
       const a = document.createElement('a');
       a.download = `simulasyon-${formatStamp(new Date())}.png`;
-      a.href = mainCanvas.toDataURL('image/png');
+      a.href = buildSingleDataUrl();
       a.click();
     });
 
@@ -1448,12 +1308,6 @@
     });
     document.getElementById('btn-zoom-reset').addEventListener('click', resetZoom);
 
-    // Arka plan kaldır
-    document.getElementById('btn-bg-remove').addEventListener('click', removeBackgroundAuto);
-
-    // Zemin beyaz yap
-    document.getElementById('btn-fill-white').addEventListener('click', fillWhite);
-
     // Sliders
     strengthSlider.addEventListener('input', () => {
       strengthValue.textContent = strengthSlider.value;
@@ -1464,6 +1318,7 @@
     });
 
     setupCanvasEvents();
+    preloadLogo();
   }
 
   document.addEventListener('DOMContentLoaded', init);
