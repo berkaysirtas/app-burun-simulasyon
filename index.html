@@ -954,23 +954,45 @@
   // TODO.md → Arkaplan Kaldırma — Gerçek Çözüm bölümüne bak.
 
   // ── Brush preview ─────────────────────────────────────────────────────────
+  let prevPreviewBounds = null;   // sadece kirli bölgeyi temizlemek için
+
   function drawBrushPreview(x, y) {
     const radius = parseInt(radiusSlider.value, 10);
-    overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+    const lineW  = radius < 12 ? 1 : 2;
+
+    // Yalnızca önceki çemberin kapladığı alanı sil (tüm canvas yerine) → daha akıcı
+    if (prevPreviewBounds) {
+      const b = prevPreviewBounds;
+      overlayCtx.clearRect(b.x, b.y, b.w, b.h);
+    }
+
+    overlayCtx.lineJoin = 'round';
     overlayCtx.beginPath();
     overlayCtx.arc(x, y, radius, 0, Math.PI * 2);
     overlayCtx.strokeStyle = 'rgba(26,95,255,0.55)';
-    overlayCtx.lineWidth = radius < 12 ? 1 : 2;
+    overlayCtx.lineWidth = lineW;
     overlayCtx.stroke();
+
     const dotR = Math.min(3, Math.max(1, radius / 4));
     overlayCtx.beginPath();
     overlayCtx.arc(x, y, dotR, 0, Math.PI * 2);
     overlayCtx.fillStyle = 'rgba(26,95,255,0.8)';
     overlayCtx.fill();
+
+    const pad = lineW + 2;
+    prevPreviewBounds = {
+      x: x - radius - pad,
+      y: y - radius - pad,
+      w: (radius + pad) * 2,
+      h: (radius + pad) * 2
+    };
   }
 
   function clearBrushPreview() {
-    overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+    if (!overlayCanvas) return;
+    const dpr = window.devicePixelRatio || 1;
+    overlayCtx.clearRect(0, 0, overlayCanvas.width / dpr, overlayCanvas.height / dpr);
+    prevPreviewBounds = null;
   }
 
   // ── Undo ──────────────────────────────────────────────────────────────────
@@ -1170,8 +1192,16 @@
       const w     = Math.round(srcW * scale);
       const h     = Math.round(srcH * scale);
 
-      beforeCanvas.width  = mainCanvas.width  = overlayCanvas.width  = w;
-      beforeCanvas.height = mainCanvas.height = overlayCanvas.height = h;
+      beforeCanvas.width  = mainCanvas.width  = w;
+      beforeCanvas.height = mainCanvas.height = h;
+
+      // Overlay'i retina (devicePixelRatio) çözünürlükte tut → imleç çemberi keskin
+      const dpr = window.devicePixelRatio || 1;
+      overlayCanvas.width  = Math.round(w * dpr);
+      overlayCanvas.height = Math.round(h * dpr);
+      overlayCanvas.style.width  = w + 'px';
+      overlayCanvas.style.height = h + 'px';
+      overlayCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
       beforeCtx.drawImage(source, 0, 0, w, h);
       mainCtx.drawImage(source, 0, 0, w, h);
