@@ -13,8 +13,8 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="apple-mobile-web-app-title" content="Burun Simülasyon">
-  <link rel="apple-touch-icon" href="dr-ismail-logo.png">
-  <link rel="icon" type="image/png" href="dr-ismail-logo.png">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <link rel="icon" type="image/png" href="icon-192.png">
 
   <!-- Android / genel -->
   <meta name="mobile-web-app-capable" content="yes">
@@ -466,7 +466,7 @@
   <header class="brand-header">
     <div class="brand-left">
       <div class="brand-icon">
-        <img src="dr-ismail-logo.png" alt="Op. Dr. İsmail Boyraz logo">
+        <img src="icon-192.png" alt="Op. Dr. İsmail Boyraz logo">
       </div>
       <div class="brand-text">
         <div class="brand-name">Op. Dr. İsmail Boyraz</div>
@@ -643,11 +643,13 @@
   // Cumulative displacement field — pixel(x,y) = warpSource(x+dispX[idx], y+dispY[idx])
   let dispX = null, dispY = null;
 
-  // Drag-start snapshot
-  let dragStartImageData = null;
+  // Drag-start snapshot. Buffer'lar görüntü yüklenince bir kez ayrılır,
+  // her drag başında .set() ile doldurulur (drag başına 6-7 MB ayırma yok).
+  let dragStartPixels = null;
   let dragStartDispX = null, dragStartDispY = null;
   let dragStartX = 0, dragStartY = 0;
   let lastWarpRect = null;
+  let warpRaf = 0;   // bekleyen requestAnimationFrame: frame başına en fazla bir warp
 
   // Pinch-to-zoom (touch) state
   let isTouchPinching  = false;
@@ -674,35 +676,41 @@
     return 0;
   }
 
-  function bicubicInterpolate(data, srcX, srcY, w, h) {
+  // Sıcak döngüde piksel başına dizi ayırmamak için tekrar kullanılan tamponlar
+  const WX = new Float64Array(4), WY = new Float64Array(4);
+  const COL = new Int32Array(4);
+  const DISP = new Float64Array(2);
+
+  // warpSource'tan bicubic örnekler, sonucu doğrudan out[pi..pi+3]'e yazar.
+  // 0-255 kırpmayı Uint8ClampedArray kendisi yapar.
+  function bicubicInto(data, srcX, srcY, w, h, out, pi) {
     const x0 = Math.floor(srcX);
     const y0 = Math.floor(srcY);
     const fx = srcX - x0;
     const fy = srcY - y0;
 
-    const wx0 = cubicWeight(-1 - fx);
-    const wx1 = cubicWeight(    -fx);
-    const wx2 = cubicWeight( 1 - fx);
-    const wx3 = cubicWeight( 2 - fx);
-    const wy0 = cubicWeight(-1 - fy);
-    const wy1 = cubicWeight(    -fy);
-    const wy2 = cubicWeight( 1 - fy);
-    const wy3 = cubicWeight( 2 - fy);
+    WX[0] = cubicWeight(-1 - fx);
+    WX[1] = cubicWeight(    -fx);
+    WX[2] = cubicWeight( 1 - fx);
+    WX[3] = cubicWeight( 2 - fx);
+    WY[0] = cubicWeight(-1 - fy);
+    WY[1] = cubicWeight(    -fy);
+    WY[2] = cubicWeight( 1 - fy);
+    WY[3] = cubicWeight( 2 - fy);
+
+    for (let i = 0; i < 4; i++) {
+      const px = x0 - 1 + i;
+      COL[i] = px < 0 ? 0 : px > w - 1 ? w - 1 : px;
+    }
 
     let r = 0, g = 0, b = 0, a = 0;
-    const wxs = [wx0, wx1, wx2, wx3];
-    const wys = [wy0, wy1, wy2, wy3];
-
     for (let j = 0; j < 4; j++) {
       const py  = y0 - 1 + j;
-      const cpy = py < 0 ? 0 : py > h - 1 ? h - 1 : py;
-      const wy  = wys[j];
-      const row = cpy * w;
+      const row = (py < 0 ? 0 : py > h - 1 ? h - 1 : py) * w;
+      const wy  = WY[j];
       for (let i = 0; i < 4; i++) {
-        const px  = x0 - 1 + i;
-        const cpx = px < 0 ? 0 : px > w - 1 ? w - 1 : px;
-        const wij = wxs[i] * wy;
-        const idx = (row + cpx) * 4;
+        const wij = WX[i] * wy;
+        const idx = (row + COL[i]) * 4;
         r += data[idx]     * wij;
         g += data[idx + 1] * wij;
         b += data[idx + 2] * wij;
@@ -710,16 +718,11 @@
       }
     }
 
-    return [
-      r < 0 ? 0 : r > 255 ? 255 : r,
-      g < 0 ? 0 : g > 255 ? 255 : g,
-      b < 0 ? 0 : b > 255 ? 255 : b,
-      a < 0 ? 0 : a > 255 ? 255 : a
-    ];
+    out[pi] = r; out[pi + 1] = g; out[pi + 2] = b; out[pi + 3] = a;
   }
 
-  // Float field için hızlı bilinear örnekleyici (smooth scalar field)
-  function bilinearSampleField(field, x, y, w, h) {
+  // dispX ve dispY'yi aynı noktada tek ağırlık hesabıyla bilinear örnekler → DISP[0], DISP[1]
+  function bilinearSampleDisp(fa, fb, x, y, w, h) {
     if (x < 0) x = 0; else if (x > w - 1) x = w - 1;
     if (y < 0) y = 0; else if (y > h - 1) y = h - 1;
     const x0 = x | 0;
@@ -728,47 +731,85 @@
     const y1 = y0 + 1 < h ? y0 + 1 : y0;
     const fx = x - x0;
     const fy = y - y0;
-    const v00 = field[y0 * w + x0];
-    const v10 = field[y0 * w + x1];
-    const v01 = field[y1 * w + x0];
-    const v11 = field[y1 * w + x1];
-    const top = v00 + (v10 - v00) * fx;
-    const bot = v01 + (v11 - v01) * fx;
-    return top + (bot - top) * fy;
+    const i00 = y0 * w + x0, i10 = y0 * w + x1;
+    const i01 = y1 * w + x0, i11 = y1 * w + x1;
+    let top = fa[i00] + (fa[i10] - fa[i00]) * fx;
+    let bot = fa[i01] + (fa[i11] - fa[i01]) * fx;
+    DISP[0] = top + (bot - top) * fy;
+    top = fb[i00] + (fb[i10] - fb[i00]) * fx;
+    bot = fb[i01] + (fb[i11] - fb[i01]) * fx;
+    DISP[1] = top + (bot - top) * fy;
+  }
+
+  // ── Dikdörtgen bölge yardımcıları (ch = piksel başına eleman: RGBA 4, disp 1) ──
+  // Aynı boyuttaki iki tam buffer arasında r bölgesini kopyalar
+  function copyRect(src, dst, r, w, ch) {
+    const len = (r.xMax - r.xMin + 1) * ch;
+    for (let y = r.yMin; y <= r.yMax; y++) {
+      const s = (y * w + r.xMin) * ch;
+      dst.set(src.subarray(s, s + len), s);
+    }
+  }
+
+  // Tam buffer'dan r bölgesini sıkışık yeni bir diziye çıkarır (undo kaydı için)
+  function extractRect(src, r, w, ch) {
+    const len = (r.xMax - r.xMin + 1) * ch;
+    const out = new src.constructor(len * (r.yMax - r.yMin + 1));
+    for (let y = r.yMin, o = 0; y <= r.yMax; y++, o += len) {
+      const s = (y * w + r.xMin) * ch;
+      out.set(src.subarray(s, s + len), o);
+    }
+    return out;
+  }
+
+  // extractRect'in tersi: sıkışık bölgeyi tam buffer'a geri yazar
+  function restoreRect(region, dst, r, w, ch) {
+    const len = (r.xMax - r.xMin + 1) * ch;
+    for (let y = r.yMin, o = 0; y <= r.yMax; y++, o += len) {
+      dst.set(region.subarray(o, o + len), (y * w + r.xMin) * ch);
+    }
+  }
+
+  function unionRect(a, b) {
+    if (!a) return b;
+    if (!b) return a;
+    return {
+      xMin: Math.min(a.xMin, b.xMin), xMax: Math.max(a.xMax, b.xMax),
+      yMin: Math.min(a.yMin, b.yMin), yMax: Math.max(a.yMax, b.yMax)
+    };
+  }
+
+  // currentImageData'nın yalnız r bölgesini canvas'a yazar
+  function flushRect(r) {
+    mainCtx.putImageData(currentImageData, 0, 0,
+      r.xMin, r.yMin, r.xMax - r.xMin + 1, r.yMax - r.yMin + 1);
   }
 
   // ── Warp ──────────────────────────────────────────────────────────────────
-  // Mimari: her frame görüntü dragStartImageData üzerinden çizilir, fakat
-  // pikseller bicubic ile DOĞRUDAN warpSource'tan örneklenir. Composed
-  // displacement = bu drag'in offset'i ∘ önceki cumulative disp.
+  // Mimari: pikseller bicubic ile DOĞRUDAN warpSource'tan örneklenir. Composed
+  // displacement = bu drag'in offset'i ∘ drag başındaki cumulative disp.
   // Sonuç: kaç drag yapılırsa yapılsın her piksel = en fazla 1 bicubic örnek.
+  // Her frame yalnız fırça dikdörtgeni işlenir: önceki frame'in dikdörtgeni drag
+  // başı durumuna döner, yenisi hesaplanır, canvas'a ikisinin birleşimi yazılır.
   function applyWarp(cx, cy, dx, dy) {
-    if (!warpSource || !dragStartImageData || !dragStartDispX) return;
+    if (!warpSource || !dragStartPixels) return;
     const strength = strengthSlider.value / 100;
     const radius   = parseInt(radiusSlider.value, 10);
     const r2 = radius * radius;
     const w  = warpSource.width;
     const h  = warpSource.height;
     const src = warpSource.data;
-    const out = new Uint8ClampedArray(dragStartImageData.data);
+    const out = currentImageData.data;
 
     const xMin = Math.max(0,     Math.floor(cx - radius));
     const xMax = Math.min(w - 1, Math.ceil(cx  + radius));
     const yMin = Math.max(0,     Math.floor(cy - radius));
     const yMax = Math.min(h - 1, Math.ceil(cy  + radius));
+    // Parmak canvas dışına taşınca dikdörtgen boş kalabilir
+    const rect = xMin <= xMax && yMin <= yMax ? { xMin, xMax, yMin, yMax } : null;
 
-    // Önceki frame'de değiştirdiğimiz pikselleri dragStart durumuna döndür
-    if (lastWarpRect) {
-      const lr = lastWarpRect;
-      for (let y = lr.yMin; y <= lr.yMax; y++) {
-        const row = y * w;
-        for (let x = lr.xMin; x <= lr.xMax; x++) {
-          const idx = row + x;
-          dispX[idx] = dragStartDispX[idx];
-          dispY[idx] = dragStartDispY[idx];
-        }
-      }
-    }
+    const prevRect = lastWarpRect;
+    if (prevRect) restoreDragStart(prevRect);
 
     for (let y = yMin; y <= yMax; y++) {
       const row = y * w;
@@ -784,43 +825,65 @@
         // Compose: drag-start disp'i (x+offX, y+offY) noktasında örnekle
         const sX = x + offX;
         const sY = y + offY;
-        const prevDX = bilinearSampleField(dragStartDispX, sX, sY, w, h);
-        const prevDY = bilinearSampleField(dragStartDispY, sX, sY, w, h);
-        const totalDX = offX + prevDX;
-        const totalDY = offY + prevDY;
+        bilinearSampleDisp(dragStartDispX, dragStartDispY, sX, sY, w, h);
+        const totalDX = offX + DISP[0];
+        const totalDY = offY + DISP[1];
 
         const idx = row + x;
         dispX[idx] = totalDX;
         dispY[idx] = totalDY;
 
-        // warpSource'tan tek seferlik bicubic örnek — birikim yok
-        const [pr, pg, pb, pa] = bicubicInterpolate(src, x + totalDX, y + totalDY, w, h);
-        const pi = idx * 4;
-        out[pi] = pr; out[pi+1] = pg; out[pi+2] = pb; out[pi+3] = pa;
+        // warpSource'tan tek seferlik bicubic örnek, birikim yok
+        bicubicInto(src, x + totalDX, y + totalDY, w, h, out, idx * 4);
       }
     }
 
-    lastWarpRect = { xMin, xMax, yMin, yMax };
-    mainCtx.putImageData(new ImageData(out, w, h), 0, 0);
-    currentImageData = mainCtx.getImageData(0, 0, w, h);
+    lastWarpRect = rect;
+    const dirty = unionRect(prevRect, rect);
+    if (dirty) flushRect(dirty);
   }
 
-  // Aktif drag'i iptal et — pinch zoom kesintisinde kullanılır
+  // r bölgesinde pikselleri ve disp alanını drag başı durumuna döndürür
+  function restoreDragStart(r) {
+    const w = currentImageData.width;
+    copyRect(dragStartPixels, currentImageData.data, r, w, 4);
+    copyRect(dragStartDispX, dispX, r, w, 1);
+    copyRect(dragStartDispY, dispY, r, w, 1);
+  }
+
+  // Olay sıklığı (120 Hz dokunmatik, 1000 Hz fare) ne olursa olsun frame başına tek warp
+  function scheduleWarp() {
+    if (!warpRaf) warpRaf = requestAnimationFrame(runPendingWarp);
+  }
+
+  function runPendingWarp() {
+    warpRaf = 0;
+    if (!isDragging) return;
+    // Toplam yer değiştirme: her frame dragStart'tan oku, blur birikmez
+    applyWarp(lastX, lastY, lastX - dragStartX, lastY - dragStartY);
+  }
+
+  function cancelPendingWarp() {
+    if (warpRaf) { cancelAnimationFrame(warpRaf); warpRaf = 0; }
+  }
+
+  // Drag'i bitirir: bekleyen son hareketi uygular, değişen bölgeyi undo'ya yazar.
+  // Hiç hareket etmeyen tıklama undo kaydı üretmez.
+  function endStroke() {
+    if (!isDragging) return;
+    if (warpRaf) { cancelPendingWarp(); runPendingWarp(); }
+    if (lastWarpRect) pushUndo(lastWarpRect, dragStartPixels, dragStartDispX, dragStartDispY);
+    lastWarpRect = null;
+    isDragging = false;
+  }
+
+  // Aktif drag'i iptal et, pinch zoom kesintisinde kullanılır
   function revertActiveDrag() {
-    if (!isDragging || !dragStartImageData) return;
-    mainCtx.putImageData(dragStartImageData, 0, 0);
-    currentImageData = mainCtx.getImageData(0, 0, mainCanvas.width, mainCanvas.height);
+    if (!isDragging) return;
+    cancelPendingWarp();
     if (lastWarpRect) {
-      const lr = lastWarpRect;
-      const w = mainCanvas.width;
-      for (let y = lr.yMin; y <= lr.yMax; y++) {
-        const row = y * w;
-        for (let x = lr.xMin; x <= lr.xMax; x++) {
-          const idx = row + x;
-          dispX[idx] = dragStartDispX[idx];
-          dispY[idx] = dragStartDispY[idx];
-        }
-      }
+      restoreDragStart(lastWarpRect);
+      flushRect(lastWarpRect);
     }
     lastWarpRect = null;
     isDragging = false;
@@ -858,7 +921,7 @@
   function preloadLogo() {
     const img = new Image();
     img.onload = () => { logoImg = img; };
-    img.src = 'dr-ismail-logo.png';
+    img.src = 'icon-192.png';
   }
 
   function pad(n) { return n < 10 ? '0' + n : '' + n; }
@@ -996,16 +1059,18 @@
   }
 
   // ── Undo ──────────────────────────────────────────────────────────────────
-  function pushUndo() {
+  // Kayıt tam görüntü yerine yalnız değişen dikdörtgeni tutar: önceki pikseller,
+  // disp alanı ve o anki warpSource referansı. Tipik bir fırça darbesi ~0,3 MB,
+  // tam kopya 800×700'de ~6,7 MB idi.
+  function pushUndo(r, pixels, dxField, dyField) {
+    const w = currentImageData.width;
     if (undoStack.length >= MAX_UNDO) undoStack.shift();
     undoStack.push({
-      image: new ImageData(
-        new Uint8ClampedArray(currentImageData.data),
-        currentImageData.width, currentImageData.height
-      ),
-      dispX: new Float32Array(dispX),
-      dispY: new Float32Array(dispY),
-      warpSource // referans — bg-remove/fill-white sonrası yeni ImageData oluşur, eskisi mutate olmaz
+      rect:   r,
+      pixels: extractRect(pixels,  r, w, 4),
+      dispX:  extractRect(dxField, r, w, 1),
+      dispY:  extractRect(dyField, r, w, 1),
+      warpSource // referans; warpSource hiçbir zaman yerinde değiştirilmez
     });
     updateUndoButton();
   }
@@ -1013,11 +1078,12 @@
   function popUndo() {
     if (!undoStack.length) return;
     const snap = undoStack.pop();
-    currentImageData = snap.image;
-    dispX = snap.dispX;
-    dispY = snap.dispY;
+    const w = currentImageData.width;
+    restoreRect(snap.pixels, currentImageData.data, snap.rect, w, 4);
+    restoreRect(snap.dispX,  dispX, snap.rect, w, 1);
+    restoreRect(snap.dispY,  dispY, snap.rect, w, 1);
     warpSource = snap.warpSource;
-    mainCtx.putImageData(snap.image, 0, 0);
+    flushRect(snap.rect);
     updateUndoButton();
   }
 
@@ -1048,18 +1114,14 @@
       return;
     }
 
-    pushUndo();
     isDragging = true;
     [lastX, lastY] = getCanvasCoords(e);
 
     dragStartX = lastX;
     dragStartY = lastY;
-    dragStartImageData = new ImageData(
-      new Uint8ClampedArray(currentImageData.data),
-      currentImageData.width, currentImageData.height
-    );
-    dragStartDispX = new Float32Array(dispX);
-    dragStartDispY = new Float32Array(dispY);
+    dragStartPixels.set(currentImageData.data);
+    dragStartDispX.set(dispX);
+    dragStartDispY.set(dispY);
     lastWarpRect = null;
   }
 
@@ -1078,21 +1140,18 @@
     // küçük titremeleri filtrele
     if (Math.abs(curX - lastX) < 0.5 && Math.abs(curY - lastY) < 0.5) return;
     lastX = curX; lastY = curY;
-    // Toplam yer değiştirme — her frame dragStart'tan oku, blur birikmez
-    const totalDx = curX - dragStartX;
-    const totalDy = curY - dragStartY;
-    applyWarp(curX, curY, totalDx, totalDy);
+    scheduleWarp();
   }
 
   function onPointerUp() {
-    isDragging = false;
+    endStroke();
     if (isPanning) {
       isPanning = false;
       mainCanvas.style.cursor = 'crosshair';
     }
   }
   function onPointerLeave() {
-    isDragging = false;
+    endStroke();
     if (isPanning) { isPanning = false; mainCanvas.style.cursor = 'crosshair'; }
     clearBrushPreview();
   }
@@ -1109,7 +1168,7 @@
     mainCanvas.addEventListener('touchstart', e => {
       e.preventDefault();
       if (e.touches.length === 1 && !isTouchPinching) {
-        // Tek parmak → warp başlat (onPointerDown dragStartImageData'yı kaydeder)
+        // Tek parmak → warp başlat (onPointerDown drag başı durumunu kaydeder)
         onPointerDown(e);
       } else if (e.touches.length === 2) {
         // İki parmak → devam eden warp'ı geri al (canvas + disp field), pinch moduna geç
@@ -1206,12 +1265,16 @@
       beforeCtx.drawImage(source, 0, 0, w, h);
       mainCtx.drawImage(source, 0, 0, w, h);
 
-      const raw = mainCtx.getImageData(0, 0, w, h);
-      originalImageData = new ImageData(new Uint8ClampedArray(raw.data), w, h);
+      // currentImageData canlı buffer'dır, drag sırasında yerinde güncellenir ve
+      // canvas'la senkron tutulur (her frame getImageData ile geri okunmaz).
       currentImageData  = mainCtx.getImageData(0, 0, w, h);
-      warpSource        = new ImageData(new Uint8ClampedArray(raw.data), w, h);
+      originalImageData = new ImageData(new Uint8ClampedArray(currentImageData.data), w, h);
+      warpSource        = originalImageData; // ikisi de hiç yerinde değiştirilmez
       dispX = new Float32Array(w * h);
       dispY = new Float32Array(w * h);
+      dragStartPixels = new Uint8ClampedArray(w * h * 4);
+      dragStartDispX  = new Float32Array(w * h);
+      dragStartDispY  = new Float32Array(w * h);
 
       undoStack = [];
       updateUndoButton();
@@ -1246,7 +1309,9 @@
     currentImageData  = null;
     warpSource        = null;
     dispX = null; dispY = null;
-    dragStartImageData = null;
+    cancelPendingWarp();
+    isDragging = false;
+    dragStartPixels = null;
     dragStartDispX = null; dragStartDispY = null;
     lastWarpRect = null;
     undoStack = [];
@@ -1300,13 +1365,14 @@
 
     btnReset.addEventListener('click', () => {
       if (!originalImageData) return;
-      pushUndo();
       const w = originalImageData.width, h = originalImageData.height;
-      currentImageData = new ImageData(new Uint8ClampedArray(originalImageData.data), w, h);
-      warpSource = new ImageData(new Uint8ClampedArray(originalImageData.data), w, h);
+      const full = { xMin: 0, xMax: w - 1, yMin: 0, yMax: h - 1 };
+      pushUndo(full, currentImageData.data, dispX, dispY);
+      currentImageData.data.set(originalImageData.data);
+      warpSource = originalImageData;
       dispX.fill(0);
       dispY.fill(0);
-      mainCtx.putImageData(currentImageData, 0, 0);
+      flushRect(full);
     });
 
     btnDownload.addEventListener('click', () => {

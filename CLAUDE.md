@@ -24,7 +24,7 @@ The entire application lives in a single `index.html` file with three inline sec
 |-----------|-------------|
 | Image loading | Reads user-selected file, draws to `<canvas>`, scales to max 800×700px (aspect-ratio preserved) |
 | Mesh warp algorithm | Displacement mapping with smooth falloff `(1 - dist²/r²)²`; bilinear interpolation for pixel resampling |
-| Undo/redo stack | FIFO queue capped at 20 `Uint8ClampedArray` deep copies |
+| Undo stack | Capped at 20 entries; each stores only the changed rectangle (pixels + displacement field), not a full copy |
 | Brush preview overlay | Second `pointer-events: none` canvas drawn on top; avoids blocking drag events |
 | Download | `canvas.toDataURL()` → PNG |
 

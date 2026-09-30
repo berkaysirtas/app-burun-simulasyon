@@ -1,8 +1,10 @@
-const CACHE = 'burun-sim-v5';
+const CACHE = 'burun-sim-v6';
 const ASSETS = [
   './index.html',
   './manifest.json',
-  './dr-ismail-logo.png',
+  './icon-192.png',
+  './icon-512.png',
+  './apple-touch-icon.png',
   './icon.svg'
 ];
 
